@@ -388,31 +388,43 @@ function onAdActivity() {
 
 /**
  * 是否在直播间广告里。
- * ★ 实测：直播间由 SurfaceView 渲染，无障碍【取不到任何节点】，
- *   只能靠 Activity 名 + 定比例坐标来关。
- * ★ 坑：直播间有时 curAct() 返回空字符串，所以不能只靠 Activity 名，
- *   还要用「在广告窗口上 + 完全取不到广告栏节点」来判断。
+ *
+ * 实测有两种形态，都要覆盖：
+ *  A) StubTranslucent / LunaSmoothLive 且【有节点】——正片形态，
+ *     里面有可点的 `关闭` Button 和「更多直播」文本；
+ *  B) 同样 Activity 但【节点为 0】——SurfaceView 渲染时读不到东西。
+ *
+ * 注意不能只看"读不到内容"：有节点的直播间同样必须识别出来。
  */
 function inLiveRoom() {
     var a = curAct() || "";
-    if (/LivePlayer|live\.plugin/i.test(a)) return true;
 
-    // 有明确广告栏特征 → 不是直播间（是普通激励视频）
+    // 明确的直播间 Activity → 直接认定
+    if (/LivePlayer|live\.plugin|LunaSmoothLive/i.test(a)) return true;
+
+    // StubTranslucent：可能是直播间，也可能是别的透明壳，继续用内容特征判断
+    if (/StubTranslucent/i.test(a)) {
+        // 有「更多直播 / 直播间」这类文案 → 就是直播间
+        if (tryFind(textContains("更多直播"), 0)) return true;
+        if (tryFind(textContains("直播间"), 0)) return true;
+        // 完全读不到内容 → 也当直播间处理（盲关）
+        if (!hasReadableContent()) return true;
+        // 有内容但既不是激励视频栏、也不是弹窗 → 仍按直播间处理
+        if (!tryFind(descContains("反馈"), 0) &&
+            !tryFind(descContains("领取成功"), 0) &&
+            !tryFind(desc("广告"), 0)) {
+            return true;
+        }
+        return false;
+    }
+
+    // 其它 Activity：只有完全读不到内容时才猜测是直播间
     if (tryFind(descContains("反馈"), 0)) return false;
     if (tryFind(desc("广告"), 0)) return false;
     if (tryFind(descMatches(/.*秒后可领取奖励.*/), 0)) return false;
     if (tryFind(descContains("领取成功"), 0)) return false;
-
-    // ★ 判断"页面上到底有没有可读内容"。
-    //   不能用 descMatches(/.*/)——它对空字符串也会匹配，等于永远为真。
-    //   这里显式要求「描述或文本非空」。
     if (hasReadableContent()) return false;
-
-    if (/ExcitingVideo|LunaSmoothLive|StubTranslucent/i.test(a)) return true;
-
-    // curAct 为空时：只要前台包是汽水音乐且拿不到任何内容，也当作直播间
-    if (a === "" && curPkg() === CFG.PKG) return true;
-    return false;
+    return /ExcitingVideo/i.test(a);
 }
 
 /** 页面上是否存在任何「非空」的文字/描述节点 */
@@ -457,7 +469,32 @@ function exitLiveRoom() {
  * 比例 (0.943, 0.084) 是实测主播间 X 的位置，
  * 用多个候选值提高容错。
  */
+/**
+ * 关闭直播间。
+ * 优先用真实节点（正片形态下 `关闭` Button 是可点的），
+ * 拿不到节点时才退到比例盲点。
+ */
 function blindCloseLive() {
+    // ① 优先：找真实的「关闭」按钮节点（实测 Button[1090,176][1207,293] 可点）
+    var closers = [];
+    try { closers = desc("关闭").find(); } catch (e) { closers = []; }
+    for (var c = 0; c < closers.length; c++) {
+        var nb = null;
+        try { nb = closers[c].bounds(); } catch (e) { }
+        if (!nb || nb.top > H * 0.15) continue;   // 关闭按钮都在顶部
+        if (closers[c].clickable && closers[c].clickable()) {
+            D("    [直播关闭] 命中可点「关闭」节点 " + nb.centerX() + "," + nb.centerY());
+            try { closers[c].click(); } catch (e) { }
+        } else {
+            D("    [直播关闭] 点「关闭」节点坐标 " + nb.centerX() + "," + nb.centerY());
+            click(nb.centerX(), nb.centerY());
+        }
+        nap(1400, 1900);
+        if (tryFind(textContains("退出不看了"), 0)) { exitLiveRoom(); nap(1000, 1400); }
+        if (!inLiveRoom()) return true;
+    }
+
+    // ② 兜底：比例盲点
     var pts = [[0.943, 0.084], [0.930, 0.083], [0.950, 0.080], [0.915, 0.088]];
     for (var i = 0; i < pts.length; i++) {
         D("    [直播盲关] 点 " + pts[i][0] + "," + pts[i][1]);
@@ -634,11 +671,17 @@ function findBlindPopup(stuckEvidence) {
 }
 
 /** 盲点弹窗上的「领取奖励」（按屏宽/屏高比例，不写死像素） */
+/**
+ * 盲点弹窗上的「领取奖励」（按屏宽/屏高比例，不写死像素）。
+ * 实测 1220×2656：红色按钮覆盖 y=1386~1528（高 142），中心 (610,1457)。
+ * 取三个候选点覆盖按钮上下，任一中即成功。
+ */
 function blindTapClaim() {
     var pts = [
-        [0.500, 0.534],   // 实测 1220x2656 时约 (610,1418)
-        [0.500, 0.545],
-        [0.500, 0.523]
+        [0.500, 0.534],   // (610, 1418) 实测点中即可推进
+        [0.500, 0.549],   // (610, 1457) 按钮几何中心
+        [0.500, 0.525],   // (610, 1394) 按钮上沿内侧
+        [0.500, 0.565]    // (610, 1500) 按钮下沿内侧
     ];
     for (var i = 0; i < pts.length; i++) {
         D("    [盲点] 领取奖励 " + pts[i][0] + "," + pts[i][1]);
@@ -647,6 +690,8 @@ function blindTapClaim() {
         // 点完出现倒计时或弹窗节点 → 成功推进
         if (tryFind(descMatches(/.*秒后可领取奖励.*/), 0)) return true;
         if (tryFind(desc("领取奖励"), 0)) return true;
+        // 界面已经离开广告页也算成功（可能直接跳下一个环节）
+        if (!onAdActivity()) return true;
     }
     return false;
 }
@@ -814,7 +859,8 @@ function runAdPhase() {
         var pop = findRewardPopup();
 
         // ★ 无障碍读不到弹窗时（自绘层），用比例盲点兜底。
-        //   必须带上"卡住证据"：closeTries 表示同一关闭按钮已经点了多次没反应。
+        //   必须带上"卡住证据"：同一关闭按钮已经点了多次没反应。
+        //   ⚠ 注意：证据来自【上一轮】，所以判定用的是"关闭次数"而不是位置顺序。
         if (!pop) {
             var blind = findBlindPopup(closeTries >= 2);
             if (blind) {
@@ -917,12 +963,37 @@ function runAdPhase() {
             // 同一支广告反复关不掉也要能脱身
             var closeKey = closers[0].s.substring(0, 20) + "@" + closers[0].b.left + "," + closers[0].b.top;
             if (closeKey === lastSig) { stuck++; closeTries = stuck; } else { stuck = 0; lastSig = closeKey; closeTries = 0; }
-            if (stuck >= 5) {
-                log("  ⚠ 关闭按钮点了 " + stuck + " 次无效，改用返回键");
+
+            // ★★ 关键修复：点 X 连续无效，说明界面上【有读不到节点的弹窗挡着】。
+            //    此时必须就地盲点「领取奖励」，而不是先去 back()。
+            //    以前这里直接 back() + continue，导致盲点逻辑永远走不到（实测卡死）。
+            if (stuck >= 2) {
+                log("  ⚠ 关闭按钮点了 " + stuck + " 次无效 → 怀疑被自绘弹窗挡住");
+                blindCount++;
+                log("    盲点「领取奖励」（第 " + blindCount + " 次）");
+                if (blindTapClaim()) {
+                    log("    ✔ 盲点成功，广告开始播放");
+                    stuck = 0; closeTries = 0; blindCount = 0;
+                    continue;
+                }
+                if (blindCount >= 3) {
+                    log("    ⚠ 盲点领取无效，盲点「坚持退出」脱身");
+                    if (blindTapExit() || !onAdActivity()) {
+                        log("    ✔ 已脱离广告页");
+                        return "OK";
+                    }
+                    // 退不出来就回到上层，由 ensureDrawerReady 的重型兜底处理
+                    return "NOAD";
+                }
+                continue;
+            }
+
+            if (stuck >= 6) {
+                log("  ⚠ 关闭按钮点了 " + stuck + " 次仍无效，改用返回键");
                 try { back(); } catch (e) { }
                 nap(1200, 1600);
                 adsDone++;
-                stuck = 0;
+                stuck = 0; closeTries = 0;
                 continue;
             }
 

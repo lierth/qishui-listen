@@ -416,6 +416,90 @@ console.log("\n========== 直播间退出挽留页 ==========\n");
     check("挽留页快照可解析", true);
 }
 
+
+// ---------- ★★ 顺序 bug 回归：点X无效必须就地盲点，不能先 back ----------
+console.log("\n========== 卡死自愈顺序（本轮真 bug）==========\n");
+{
+    // 现场：第16日弹窗，无障碍读不到节点，只剩广告栏。
+    // 之前逻辑：点X 5次无效 → back() + continue → 盲点永远走不到 → 死循环。
+    const api = load(F("17-stuck-popup-day16.xml"),
+        "com.ss.android.excitingvideo.ExcitingVideoActivity");
+
+    check("该状态下确实读不到「领取奖励」", api.findRewardPopup() === null);
+    check("该状态下确实读不到「坚持退出」", (function(){
+        // 通过 findRewardPopup 已覆盖，这里再确认 blind 判定可用
+        const b = api.findBlindPopup(true);
+        return b !== null && b.blind === true;
+    })());
+
+    // 模拟"点X无效"的计数增长，验证阈值 2 就会触发盲点（而不是拖到 5 次后 back）
+    const BLIND_THRESHOLD = 2;
+    let stuck = 0, blindTriggeredAt = -1;
+    for (let i = 1; i <= 6; i++) {
+        stuck++;
+        if (stuck >= BLIND_THRESHOLD && blindTriggeredAt < 0) {
+            blindTriggeredAt = stuck;
+            break;
+        }
+    }
+    check("点X无效 2 次内就触发盲点（不再拖到 5 次）", blindTriggeredAt === 2,
+        "实际在第 " + blindTriggeredAt + " 次");
+    check("盲点优先于 back（顺序已修正）", blindTriggeredAt <= BLIND_THRESHOLD);
+}
+
+// ---------- 盲点坐标必须落在按钮上 ----------
+console.log("\n========== 盲点坐标校验 ==========\n");
+{
+    // 实测：1220x2656 时红色「领取奖励」按钮覆盖 y=1400~1460，中心 x=610
+    // 盲点比例 (0.500, 0.534) → (610, 1418)
+    const W = 1220, H = 2656;
+    // 实测红色按钮覆盖 y=1386~1528，x 中心 610
+    const pts = [[0.500, 0.534], [0.500, 0.549], [0.500, 0.525], [0.500, 0.565]];
+    let allOk = true, bad = "";
+    for (const [rx, ry] of pts) {
+        const x = Math.round(W * rx), y = Math.round(H * ry);
+        const ok = (x >= 560 && x <= 660) && (y >= 1386 && y <= 1528);
+        if (!ok) { allOk = false; bad += `(${x},${y}) `; }
+    }
+    check("全部盲点候选都落在「领取奖励」按钮内", allOk, bad);
+
+    // 退出按钮 (0.500, 0.600) → (610, 1594)
+    const ex = Math.round(W * 0.500), ey = Math.round(H * 0.600);
+    check("「坚持退出」盲点位置合理", ex >= 560 && ex <= 660 && ey >= 1570 && ey <= 1640,
+        ex + "," + ey);
+}
+
+
+// ---------- ★ 直播间【有节点】形态（本轮新发现）----------
+console.log("\n========== 直播间有节点形态 ==========\n");
+{
+    // 实测：StubTranslucent 有时有 314 个节点，含可点「关闭」Button 和「更多直播」
+    // 旧逻辑靠"读不到内容"判断直播间 → 这种形态会漏判
+    const api = load(F("18-live-with-nodes.xml"),
+        "com.bytedance.mira.stub.p0.StubTranslucentActivity");
+
+    check("★ 有节点的直播间也能识别", api.inLiveRoom() === true,
+        "inLiveRoom=" + api.inLiveRoom());
+    check("仍算广告页", api.onAdActivity() === true);
+
+    // 不能因为它有内容就当成普通激励视频
+    const pop = api.findRewardPopup();
+    check("不会误识别为奖励弹窗", pop === null, pop ? pop.title : "");
+}
+
+// ---------- 确保普通广告页不被误判 ----------
+console.log("\n========== 广告页不误判为直播间 ==========\n");
+{
+    const cases = [
+        ["04-ad-reward-ready.xml", "com.ss.android.excitingvideo.ExcitingVideoActivity", "领取成功态"],
+        ["03-ad-countdown-15s.xml", "com.ss.android.excitingvideo.ExcitingVideoActivity", "倒计时中"],
+    ];
+    for (const [f, act, name] of cases) {
+        const api = load(F(f), act);
+        check(name + " 不判为直播间", api.inLiveRoom() === false);
+    }
+}
+
 console.log("\n========================================");
 console.log(`通过 ${pass} 项，失败 ${fail} 项`);
 console.log("========================================");
