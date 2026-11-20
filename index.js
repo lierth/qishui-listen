@@ -512,6 +512,25 @@ function blindCloseLive() {
 }
 
 /**
+ * 广告顶部栏的 X 按钮（desc 形如「领取成功，关闭，按钮」）。
+ * ★ 它有「关闭/跳过」字样，而且在屏幕顶部 15%；
+ *   弹窗里的「领取成功」按钮两者都没有。靠这两条区分：
+ *   否则会把弹窗按钮当成顶部栏，或者反过来把顶部栏当成领奖励。
+ */
+function adBarX() {
+    var arr = [];
+    try { arr = descContains("领取成功").find(); } catch (e) { arr = []; }
+    for (var i = 0; i < arr.length; i++) {
+        var s = "", b;
+        try { s = arr[i].desc() || ""; } catch (e) { }
+        if (!/关闭|跳过/.test(s)) continue;
+        try { b = arr[i].bounds(); } catch (e) { continue; }
+        if (b.top < H * 0.15) return arr[i];
+    }
+    return null;
+}
+
+/**
  * 找广告的关闭按钮。
  * 注意：真正的 X 图标是容器里的一个小 ImageView，
  * 点文字节点中心会点不动（旧脚本就是死在这里）。
@@ -605,13 +624,50 @@ function closeTapPoint(item) {
 
 // ====================== 奖励弹窗识别 ======================
 /**
+ * 弹窗上的「领取」按钮文案。实测同一个位置会随版本/AB 实验变化：
+ *   领取奖励 / 领取成功  ← 用户实测两种都会出现
+ * 所以不能只认一个。注意不能拿 descContains 大范围兜，
+ * 因为广告顶栏的 X 关闭按钮 desc 恰好是「领取成功，关闭，按钮」，
+ * 兜进来就会把"关广告"当成"领奖励"（点错就提前关掉广告栏）。
+ */
+var POPUP_CLAIM_TEXTS = ["领取奖励", "领取成功", "立即领取", "领取福利"];
+
+/**
+ * 在【弹窗区域】找领取按钮，返回 {node, label} 或 null。
+ * 两道防线区分弹窗按钮与顶栏 X：
+ *   1. 排除含「关闭 / 跳过 / 反馈」的文案（顶栏 X 一定是这种组合）；
+ *   2. 排除屏幕顶部 15% 以内的节点（广告栏固定在那里）。
+ */
+function findPopupClaimNode() {
+    for (var i = 0; i < POPUP_CLAIM_TEXTS.length; i++) {
+        var sels = [desc(POPUP_CLAIM_TEXTS[i]), text(POPUP_CLAIM_TEXTS[i])];
+        for (var j = 0; j < sels.length; j++) {
+            var arr = [];
+            try { arr = sels[j].find(); } catch (e) { arr = []; }
+            for (var k = 0; k < arr.length; k++) {
+                var n = arr[k], s = "", b;
+                try { s = (n.desc() || "") + "|" + (n.text() || ""); } catch (e) { }
+                if (/关闭|跳过|反馈/.test(s)) continue;
+                try { b = n.bounds(); } catch (e) { continue; }
+                if (b.width() <= 0 || b.height() <= 0) continue;
+                if (b.top < H * 0.15) continue;
+                return { node: n, label: POPUP_CLAIM_TEXTS[i] };
+            }
+        }
+    }
+    return null;
+}
+
+/**
  * 奖励弹窗：
  *   「再看N个视频提前得」 + 标题（今日免费听 / 第6日免费听 / 明日免费听）
- *   + 「领取奖励」 + 「坚持退出」
- * 返回 null 或 {title, isLimit, enter, exit}
+ *   + 「领取奖励 / 领取成功」 + 「坚持退出」
+ * 返回 null 或 {title, isLimit, enter, exit, label}
  */
 function findRewardPopup() {
-    var enter = tryFind(desc("领取奖励"), 0) || tryFind(text("领取奖励"), 0);
+    var claim = findPopupClaimNode();
+    var enter = claim ? claim.node : null;
+    var label = claim ? claim.label : "";
     var exit = tryFind(desc("坚持退出"), 0) || tryFind(text("坚持退出"), 0);
     if (!enter && !exit) return null;
 
@@ -633,7 +689,7 @@ function findRewardPopup() {
     }
 
     var isLimit = /^明日免费听$/.test(title) || /明天/.test(title);
-    return { title: title, isLimit: isLimit, enter: enter, exit: exit, blind: false };
+    return { title: title, isLimit: isLimit, enter: enter, exit: exit, blind: false, label: label };
 }
 
 /**
@@ -652,8 +708,8 @@ function findRewardPopup() {
 function findBlindPopup(stuckEvidence) {
     if (!onAdActivity()) return null;
 
-    // 有正常的弹窗节点就不用盲点
-    if (tryFind(desc("领取奖励"), 0) || tryFind(text("领取奖励"), 0)) return null;
+    // 有正常的弹窗节点就不用盲点（文案可能是「领取奖励」也可能是「领取成功」）
+    if (findPopupClaimNode()) return null;
     if (tryFind(desc("坚持退出"), 0) || tryFind(text("坚持退出"), 0)) return null;
 
     // 必须确实是广告页：有广告栏特征
@@ -671,13 +727,16 @@ function findBlindPopup(stuckEvidence) {
     return { title: "(读不到)", isLimit: false, enter: null, exit: null, blind: true };
 }
 
-/** 盲点弹窗上的「领取奖励」（按屏宽/屏高比例，不写死像素） */
+/** 盲点弹窗上的领取按钮（「领取奖励」/「领取成功」都走这里，按屏宽/屏高比例，不写死像素） */
 /**
- * 盲点弹窗上的「领取奖励」（按屏宽/屏高比例，不写死像素）。
+ * 盲点弹窗上的领取按钮（按屏宽/屏高比例，不写死像素）。
  *
  * 实测（1220×2656，弹窗可读时拿到的真实节点）：
  *   领取奖励  节点 [514,1383][706,1452]  中心 (610,1417)  比例 (0.500, 0.534)
  *   坚持退出  节点 [518,1564][702,1625]  中心 (610,1594)  比例 (0.500, 0.600)
+ *
+ * 同一个位置的文案可能是「领取奖励」也可能是「领取成功」，
+ * 但两者节点框实测一致，所以盲点坐标共用一套。
  *
  * 所以盲点必须以「节点框」为准，不能按红色色块量——
  * 色块比可点区域更大，落在色块边缘不会触发点击。
@@ -690,12 +749,12 @@ function blindTapClaim() {
         [0.500, 0.522]    // (610, 1386) 上沿内侧
     ];
     for (var i = 0; i < pts.length; i++) {
-        D("    [盲点] 领取奖励 " + pts[i][0] + "," + pts[i][1]);
+        D("    [盲点] 领取按钮 " + pts[i][0] + "," + pts[i][1]);
         tapRatio(pts[i][0], pts[i][1]);
         nap(1500, 2000);
         // 点完出现倒计时或弹窗节点 → 成功推进
         if (tryFind(descMatches(/.*秒后可领取奖励.*/), 0)) return true;
-        if (tryFind(desc("领取奖励"), 0)) return true;
+        if (findPopupClaimNode()) return true;
         // 界面已经离开广告页也算成功（可能直接跳下一个环节）
         if (!onAdActivity()) return true;
     }
@@ -970,7 +1029,7 @@ function runAdPhase() {
             var blind = findBlindPopup(closeTries >= 2);
             if (blind) {
                 blindCount++;
-                log("  ★ 检测到「读不到节点」的奖励弹窗，盲点「领取奖励」（第 " + blindCount + " 次）");
+                log("  ★ 检测到「读不到节点」的奖励弹窗，盲点领取按钮（第 " + blindCount + " 次）");
                 if (blindTapClaim()) {
                     log("    → 盲点成功，广告已开始");
                     blindCount = 0;
@@ -1039,7 +1098,7 @@ function runAdPhase() {
                 } else {
                     tapPercent(pop.enter, popTries - 1);
                 }
-                log("    → 点「领取奖励」，继续下一个");
+                log("    → 点「" + (pop.label || "领取奖励") + "」，继续下一个");
                 nap(2200, 3200);
                 continue;
             }
@@ -1075,7 +1134,7 @@ function runAdPhase() {
             if (stuck >= 2) {
                 log("  ⚠ 关闭按钮点了 " + stuck + " 次无效 → 怀疑被自绘弹窗挡住");
                 blindCount++;
-                log("    盲点「领取奖励」（第 " + blindCount + " 次）");
+                log("    盲点领取按钮（第 " + blindCount + " 次）");
                 if (blindTapClaim()) {
                     log("    ✔ 盲点成功，广告开始播放");
                     stuck = 0; closeTries = 0; blindCount = 0;

@@ -168,7 +168,7 @@ function loadIndex(xmlPath, screen) {
     const keys = Object.keys(ctx);
     const fn = new Function(...keys, body + "\nreturn {isDrawerOpen, findMoreButton, findClaimButton," +
         " drawerShowsClaimed, findCountdown, findAdClosers, closeTapPoint, findRewardPopup," +
-        " popupHint, ensureDrawerReady, openDrawer, tapMyTab, CFG, W, H};");
+        " popupHint, ensureDrawerReady, openDrawer, tapMyTab, findPopupClaimNode, adBarX, CFG, W, H};");
     const api = fn(...keys.map((k) => ctx[k]));
     return { api, logs, actions };
 }
@@ -274,6 +274,43 @@ console.log("\n=== 09 奖励弹窗：明日免费听（今日已满）★关键 
         check("标题=明日免费听", p.title === "明日免费听", p.title);
         check("★判定为今日已满", p.isLimit === true, "isLimit=" + p.isLimit);
     }
+}
+
+console.log("\n=== 22 奖励弹窗：按钮文案是「领取成功」而非「领取奖励」★关键 ===");
+{
+    // 用户实测：同一个位置有时显示「领取奖励」，有时显示「领取成功」
+    const { api } = loadIndex(F("22-popup-claim-success.xml"), { w: 1220, h: 2656, act: "com.ss.android.excitingvideo.ExcitingVideoActivity" });
+
+    const p = api.findRewardPopup();
+    check("识别到奖励弹窗", p !== null);
+    if (p) {
+        check("标题=第17日免费听", p.title === "第17日免费听", p.title);
+        check("能拿到领取按钮节点", p.enter !== null);
+        check("★文案被记录为「领取成功」", p.label === "领取成功", p.label);
+        check("有「坚持退出」", p.exit !== null);
+    }
+
+    // ★ 最容易踩的坑：顶栏 X 的 desc 是「领取成功，关闭，按钮」，
+    //   大范围 descContains 会把 X 当成领奖励，一点就提前关掉广告栏。
+    const claim = api.findPopupClaimNode();
+    check("弹窗领取按钮被正确识别", claim !== null && claim.label === "领取成功",
+        claim ? claim.label : "null");
+    if (claim) {
+        const b = claim.node.bounds();
+        check("★没把顶栏 X 当成领取按钮", b.top > 2656 * 0.15, "top=" + b.top);
+        check("落在弹窗按钮位置(514~706)", b.left === 514 && b.right === 706,
+            b.left + "~" + b.right);
+    }
+    const x = api.adBarX();
+    check("★顶栏 X 能单独识别出来", x !== null);
+    if (x) {
+        const xb = x.bounds();
+        check("顶栏 X 在屏幕顶部 15% 内", xb.top < 2656 * 0.15, "top=" + xb.top);
+        check("顶栏 X 的 desc 含「关闭」", /关闭/.test(x.desc()), x.desc());
+    }
+    // 关广告时仍然应该关顶栏那个 X，而不是弹窗按钮
+    const cl = api.findAdClosers();
+    check("关闭按钮列表非空", cl.length > 0, String(cl.length));
 }
 
 // ---------- 跨设备比例检查 ----------

@@ -143,7 +143,8 @@ function load(xml, act) {
         .replace(/^\s*main\(\);\s*$/m, "");
     const keys = Object.keys(ctx);
     const fn = new Function(...keys, src + "\nreturn {isDrawerOpen, findMoreButton, findClaimButton," +
-        " findCountdown, findAdClosers, closeTapPoint, findRewardPopup, drawerShowsClaimed, isMyPage, inLiveRoom, onAdActivity, findBlindPopup};");
+        " findCountdown, findAdClosers, closeTapPoint, findRewardPopup, drawerShowsClaimed, isMyPage, inLiveRoom, onAdActivity, findBlindPopup," +
+        " findPopupClaimNode, adBarX};");
     return fn(...keys.map((k) => ctx[k]));
 }
 
@@ -471,8 +472,44 @@ console.log("\n========== 盲点坐标校验 ==========\n");
 }
 
 
-// ---------- ★ 直播间【有节点】形态（本轮新发现）----------
-console.log("\n========== 直播间有节点形态 ==========\n");
+// ---------- ★ 领取按钮两种文案（领取奖励 / 领取成功）都要能推进 ----------
+console.log("\n========== 领取按钮文案别名 ==========\n");
+{
+    // 用户实测：最后一个界面上的按钮不一定写「领取奖励」，也可能写「领取成功」。
+    // 两种都必须判成 CONTINUE，否则脚本会在弹窗前判定 UNKNOWN 卡住。
+    const cases = [
+        ["20-popup-normal-full-nodes.xml", "领取奖励", "第17日免费听"],
+        ["22-popup-claim-success.xml", "领取成功", "第17日免费听"],
+    ];
+    for (const [f, label, title] of cases) {
+        const api = load(F(f), "com.ss.android.excitingvideo.ExcitingVideoActivity");
+        const d = decide(api);
+        check(`「${label}」弹窗 → CONTINUE`, d.a === "CONTINUE", "得到 " + d.a + " / " + d.detail);
+
+        const pop = api.findRewardPopup();
+        check(`「${label}」能拿到弹窗对象`, pop !== null);
+        if (pop) {
+            check(`「${label}」标题=${title}`, pop.title === title, pop.title);
+            check(`「${label}」按钮文案记录为 ${label}`, pop.label === label, pop.label);
+            check(`「${label}」不是上限`, pop.isLimit === false);
+        }
+    }
+
+    // 同一份快照里两个「领取成功」：
+    //   顶栏 X  「领取成功，关闭，按钮」→ 归 findAdClosers
+    //   弹窗按钮 「领取成功」            → 归 findPopupClaimNode
+    const api = load(F("22-popup-claim-success.xml"), "com.ss.android.excitingvideo.ExcitingVideoActivity");
+    const claim = api.findPopupClaimNode();
+    const barX = api.adBarX();
+    check("弹窗按钮与顶栏 X 都能定位", claim !== null && barX !== null);
+    if (claim && barX) {
+        check("★两者不是同一个节点",
+            claim.node.bounds().left !== barX.bounds().left,
+            claim.node.bounds().left + " vs " + barX.bounds().left);
+    }
+}
+
+// ---------- ★ 直播间【有节点】形态（本轮新发现）----------console.log("\n========== 直播间有节点形态 ==========\n");
 {
     // 实测：StubTranslucent 有时有 314 个节点，含可点「关闭」Button 和「更多直播」
     // 旧逻辑靠"读不到内容"判断直播间 → 这种形态会漏判
