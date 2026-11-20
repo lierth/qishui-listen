@@ -726,6 +726,87 @@ function popupHint() {
 }
 
 // ====================== App 启动/归位 ======================
+/**
+ * ★ 彻底结束汽水音乐进程，然后重新打开。
+ *
+ * 为什么要这么狠：实测里遇到的各种"未知状态"——
+ *   停留在广告页、弹窗读不到节点、back() 退不出去、
+ *   误入系统设置页、直播间无节点……
+ * 单靠页面内的点击去猜，成本高且容易越陷越深。
+ *
+ * 系统性地杀掉重启一次，等于回到干净起点，比逐个补丁稳得多。
+ *
+ * 实现路径（实测 MIUI 可用）：
+ *   openAppSetting → 应用信息页 → 点「结束运行」→ 点「确定」
+ * 全部靠文案定位，不依赖像素。
+ */
+function hardRestartApp() {
+    log("  ⟳ 彻底重启汽水音乐（清理所有残留状态）");
+
+    // ① 打开应用信息页
+    var opened = false;
+    try { opened = app.openAppSetting(CFG.PKG); } catch (e) {
+        opened = false;
+        D("    [重启] openAppSetting 失败：" + e);
+    }
+    nap(2000, 2600);
+
+    // 兜底：用 intent 直接打开发布者设置页
+    if (!opened || curPkg() === CFG.PKG) {
+        try {
+            app.startActivity({
+                action: "android.settings.APPLICATION_DETAILS_SETTINGS",
+                data: "package:" + CFG.PKG
+            });
+        } catch (e2) { }
+        nap(2000, 2600);
+    }
+
+    // ② 点「结束运行」/「强行停止」
+    var stopWords = ["结束运行", "强行停止", "强制停止", "停止"];
+    var stopped = false;
+    for (var i = 0; i < stopWords.length && !stopped; i++) {
+        var btn = tryFind(textContains(stopWords[i]), 800);
+        if (!btn) continue;
+        D("    [重启] 点「" + stopWords[i] + "」");
+        try { tapNode(btn); } catch (e) { }
+        nap(1500, 2000);
+        stopped = true;
+    }
+
+    // ③ 确认弹窗点「确定」
+    if (stopped) {
+        var ok = tryFind(text("确定"), 1500) || tryFind(text("确定"), 500);
+        if (ok) {
+            D("    [重启] 确认「确定」");
+            try { tapNode(ok); } catch (e) { }
+            nap(2000, 2600);
+        }
+        // 有的机型还要再确认一次
+        var ok2 = tryFind(text("确定"), 600);
+        if (ok2) { try { tapNode(ok2); } catch (e) { } nap(1200, 1600); }
+    } else {
+        D("    [重启] 没找到停止按钮，改用返回键脱离");
+    }
+
+    // ④ 退出设置页，回桌面
+    for (var b = 0; b < 4 && curPkg() !== CFG.PKG; b++) {
+        if (/launcher|home/i.test(curAct())) break;
+        try { back(); } catch (e) { }
+        nap(700, 1000);
+    }
+    try { home(); } catch (e) { }
+    nap(1000, 1400);
+
+    // ⑤ 冷启动
+    launchAppSafe();
+    nap(1500, 2200);
+
+    var ok3 = curPkg() === CFG.PKG;
+    log("  ⟳ 重启" + (ok3 ? "成功" : "后未能进入 App"));
+    return ok3;
+}
+
 function launchAppSafe() {
     D("  [启动] 打开汽水音乐");
     try {
@@ -844,6 +925,16 @@ function ensureDrawerReady() {
         D("  [归位] 第 " + (attempt + 1) + " 次失败，重试");
         dismissInterruptions();
         nap(700, 1100);
+
+        // ★ 前两次失败先温和重试；第 3 次直接彻底重启 App，
+        //   比继续在脏状态里瞎猜稳得多（实测各种卡死都靠这招脱身）。
+        if (attempt === 2) {
+            log("  [归位] 连续失败，执行彻底重启");
+            if (hardRestartApp()) {
+                if (isMyPage()) tapMyTab();
+                nap(800, 1200);
+            }
+        }
     }
     return false;
 }
@@ -1144,9 +1235,18 @@ function main() {
             if (!advanced) {
                 failStreak++;
                 log("  ✗ 本轮未完成（连续 " + failStreak + "）");
-                if (failStreak >= 5) { result = "多次无法推进"; break; }
-                try { back(); } catch (eB) { }
-                nap(1200, 1800);
+                if (failStreak >= 8) { result = "多次无法推进"; break; }
+
+                // ★ 连续 2 轮没推进 → 彻底重启一次。
+                //   停留在广告页/可疑状态时，继续在原地点击只会越陷越深。
+                if (failStreak % 2 === 0) {
+                    log("  ⟳ 连续 " + failStreak + " 轮未推进，彻底重启 App");
+                    hardRestartApp();
+                    nap(1200, 1800);
+                } else {
+                    try { back(); } catch (eB) { }
+                    nap(1200, 1800);
+                }
                 continue;
             }
             ads++;
@@ -1155,9 +1255,16 @@ function main() {
         } catch (e) {
             failStreak++;
             log("  ✗ 本轮异常：" + e);
-            if (failStreak >= 5) { result = "异常过多：" + e; break; }
-            try { back(); } catch (eB2) { }
-            sleep(1500);
+            if (failStreak >= 8) { result = "异常过多：" + e; break; }
+
+            if (failStreak % 2 === 0) {
+                log("  ⟳ 异常连续出现，彻底重启 App");
+                try { hardRestartApp(); } catch (eR) { }
+                nap(1200, 1800);
+            } else {
+                try { back(); } catch (eB2) { }
+                sleep(1500);
+            }
         }
         nap(CFG.LOOP_SLEEP[0], CFG.LOOP_SLEEP[1]);
     }

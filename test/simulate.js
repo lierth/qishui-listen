@@ -528,6 +528,47 @@ console.log("\n========== 误入系统页（悬浮球）自愈 ==========\n");
         /curPkg\(\)\s*!==\s*CFG\.PKG/.test(body) && /先退出/.test(src));
 }
 
+
+// ---------- ★ 彻底重启 App（用户建议的方案）----------
+console.log("\n========== 彻底重启 App ==========\n");
+{
+    // 应用信息页：靠文案定位「结束运行」，不依赖像素
+    const api = load(F("21-appinfo-force-stop.xml"), "com.miui.appmanager.ApplicationsDetailsActivity");
+    check("该页不是广告页", api.onAdActivity() === false);
+    check("该页不是「我的」页", api.isMyPage() === false);
+
+    // 脚本必须能在这页找到「结束运行」
+    const src = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+    const body = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    check("★ 有 hardRestartApp 函数", /function\s+hardRestartApp\s*\(/.test(body));
+    check("★ 停止按钮用文案定位（结束运行/强行停止）",
+        /结束运行/.test(src) && /强行停止/.test(src));
+    check("★ 会点「确定」确认", /text\("确定"\)/.test(src));
+    // 检查 hardRestartApp 函数体内确实调用了 launchAppSafe
+    const hrMatch = src.match(/function hardRestartApp\(\)[\s\S]*?\n}/);
+    check("★ 重启后走 launchAppSafe 冷启动",
+        !!hrMatch && /launchAppSafe\(\)/.test(hrMatch[0]),
+        hrMatch ? "函数体未调用" : "找不到函数");
+
+    // 关键接线：连续失败必须触发重启
+    check("★ 归位连续失败会触发彻底重启",
+        /attempt === 2[\s\S]{0,200}hardRestartApp/.test(src));
+    check("★ 主循环连续未推展会触发彻底重启",
+        /failStreak % 2 === 0[\s\S]{0,200}hardRestartApp/.test(src));
+}
+
+// ---------- 重启流程的判定不能误伤正常流程 ----------
+console.log("\n========== 重启不误伤正常流程 ==========\n");
+{
+    // 正常广告页不该被当成"需要重启"的脏状态
+    const ad = load(F("04-ad-reward-ready.xml"), "com.ss.android.excitingvideo.ExcitingVideoActivity");
+    check("正常广告页：不算脏状态", ad.onAdActivity() === true);
+
+    // 我的页更不该重启
+    const my = load(F("01-my-page-nodrawer.xml"), "com.luna.biz.main.main.MainActivity");
+    check("我的页：不算脏状态", my.isMyPage() === true && my.onAdActivity() === false);
+}
+
 console.log("\n========================================");
 console.log(`通过 ${pass} 项，失败 ${fail} 项`);
 console.log("========================================");
