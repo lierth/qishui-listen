@@ -453,15 +453,16 @@ console.log("\n========== 盲点坐标校验 ==========\n");
     // 实测：1220x2656 时红色「领取奖励」按钮覆盖 y=1400~1460，中心 x=610
     // 盲点比例 (0.500, 0.534) → (610, 1418)
     const W = 1220, H = 2656;
-    // 实测红色按钮覆盖 y=1386~1528，x 中心 610
-    const pts = [[0.500, 0.534], [0.500, 0.549], [0.500, 0.525], [0.500, 0.565]];
+    // ★ 以「弹窗可读时的真实节点框」为准：[514,1383][706,1452]
+    //   （之前按红色色块量 1386~1528 是错的，色块大于可点区域）
+    const pts = [[0.500, 0.534], [0.500, 0.528], [0.500, 0.541], [0.500, 0.522]];
     let allOk = true, bad = "";
     for (const [rx, ry] of pts) {
         const x = Math.round(W * rx), y = Math.round(H * ry);
-        const ok = (x >= 560 && x <= 660) && (y >= 1386 && y <= 1528);
+        const ok = (x >= 514 && x <= 706) && (y >= 1383 && y <= 1452);
         if (!ok) { allOk = false; bad += `(${x},${y}) `; }
     }
-    check("全部盲点候选都落在「领取奖励」按钮内", allOk, bad);
+    check("全部盲点候选都落在「领取奖励」真实节点框内", allOk, bad);
 
     // 退出按钮 (0.500, 0.600) → (610, 1594)
     const ex = Math.round(W * 0.500), ey = Math.round(H * 0.600);
@@ -498,6 +499,33 @@ console.log("\n========== 广告页不误判为直播间 ==========\n");
         const api = load(F(f), act);
         check(name + " 不判为直播间", api.inLiveRoom() === false);
     }
+}
+
+
+// ---------- ★ 误入其它 App 的自愈 ----------
+console.log("\n========== 误入系统页（悬浮球）自愈 ==========\n");
+{
+    // 实测现场：点击屏幕中央会点中小米悬浮球，被带到
+    // com.miui.touchassistant 的设置页（或 com.android.settings），
+    // 之后脚本在里面反复找「更多」按钮，永远失败。
+    const api = load(F("19-floatball-settings.xml"), "com.miui.touchassistant.MainActivity");
+
+    check("该页不是抽屉（isDrawerOpen=false）", api.isDrawerOpen() === false);
+    check("该页没有任何广告特征（onAdActivity=false）", api.onAdActivity() === false);
+    check("该页不是「我的」页", api.isMyPage() === false);
+    check("该页找不到领取按钮", api.findClaimButton() === null);
+
+    // 关键：这种页面绝不能靠"点屏幕中央"来尝试关闭
+    // （实测点中央会点中悬浮球，反而越陷越深）
+    const src = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
+    const body = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    check("★ 脚本里已无 tapRatio(0.5, 0.5) 这种盲点中央",
+        !/tapRatio\s*\(\s*0\.5\s*,\s*0\.5\s*\)/.test(body),
+        "仍存在盲点中央");
+
+    // 确认有"先 back 退出再拉起"的处理
+    check("★ 有「当前不在汽水音乐则先按返回」的逻辑",
+        /curPkg\(\)\s*!==\s*CFG\.PKG/.test(body) && /先退出/.test(src));
 }
 
 console.log("\n========================================");
