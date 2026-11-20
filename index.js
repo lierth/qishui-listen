@@ -403,12 +403,28 @@ function inLiveRoom() {
     if (tryFind(descMatches(/.*秒后可领取奖励.*/), 0)) return false;
     if (tryFind(descContains("领取成功"), 0)) return false;
 
-    // Activity 为空或在广告 Activity 上，且节点全空 → 认定为直播间
-    if (tryFind(descMatches(/.*/), 0)) return false;
+    // ★ 判断"页面上到底有没有可读内容"。
+    //   不能用 descMatches(/.*/)——它对空字符串也会匹配，等于永远为真。
+    //   这里显式要求「描述或文本非空」。
+    if (hasReadableContent()) return false;
+
     if (/ExcitingVideo|LunaSmoothLive|StubTranslucent/i.test(a)) return true;
 
-    // curAct 为空时：只要前台包是汽水音乐且拿不到任何节点，也当作直播间
+    // curAct 为空时：只要前台包是汽水音乐且拿不到任何内容，也当作直播间
     if (a === "" && curPkg() === CFG.PKG) return true;
+    return false;
+}
+
+/** 页面上是否存在任何「非空」的文字/描述节点 */
+function hasReadableContent() {
+    var nodes = [];
+    try { nodes = classNameMatches(/.*/).find(); } catch (e) { nodes = []; }
+    for (var i = 0; i < nodes.length; i++) {
+        var d = "", t = "";
+        try { d = nodes[i].desc() || ""; } catch (e) { }
+        try { t = nodes[i].text() || ""; } catch (e) { }
+        if (d.length > 0 || t.length > 0) return true;
+    }
     return false;
 }
 
@@ -579,7 +595,77 @@ function findRewardPopup() {
     }
 
     var isLimit = /^明日免费听$/.test(title) || /明天/.test(title);
-    return { title: title, isLimit: isLimit, enter: enter, exit: exit };
+    return { title: title, isLimit: isLimit, enter: enter, exit: exit, blind: false };
+}
+
+/**
+ * ★★ 重大实测教训：奖励弹窗有时【完全读不到无障碍节点】。
+ *   屏幕上明明显示「再看2个视频提前得 / 第13日免费听 / 领取奖励 / 坚持退出」，
+ *   但无障碍树里一个都读不到（弹窗是自绘层），只剩顶部广告栏。
+ *
+ *   ⚠ 危险：直播广告落地页的节点签名和它【几乎完全一样】
+ *     （都只有 "反馈，按钮" + "领取成功，关闭，按钮"）。
+ *     如果在落地页上盲点 (0.5, 0.534)，会误触「点击进入直播间」，
+ *     反被拖进直播间 —— 实测踩过这个坑。
+ *
+ *   所以盲点不能当"主动判断"，必须满足【卡住证据】才允许：
+ *     连续多次点 X 都无效（广告栏一直在、界面没推进）。
+ */
+function findBlindPopup(stuckEvidence) {
+    if (!onAdActivity()) return null;
+
+    // 有正常的弹窗节点就不用盲点
+    if (tryFind(desc("领取奖励"), 0) || tryFind(text("领取奖励"), 0)) return null;
+    if (tryFind(desc("坚持退出"), 0) || tryFind(text("坚持退出"), 0)) return null;
+
+    // 必须确实是广告页：有广告栏特征
+    var barOk = false;
+    if (tryFind(descContains("领取成功"), 0)) barOk = true;
+    if (tryFind(descContains("反馈"), 0)) barOk = true;
+    if (!barOk) return null;
+
+    // 还有倒计时 → 真在放，不要乱点
+    if (tryFind(descMatches(/.*秒后可领取奖励.*/), 0)) return null;
+
+    // ★ 没有"卡住证据"就不盲点，避免在直播落地页上误触
+    if (!stuckEvidence) return null;
+
+    return { title: "(读不到)", isLimit: false, enter: null, exit: null, blind: true };
+}
+
+/** 盲点弹窗上的「领取奖励」（按屏宽/屏高比例，不写死像素） */
+function blindTapClaim() {
+    var pts = [
+        [0.500, 0.534],   // 实测 1220x2656 时约 (610,1418)
+        [0.500, 0.545],
+        [0.500, 0.523]
+    ];
+    for (var i = 0; i < pts.length; i++) {
+        D("    [盲点] 领取奖励 " + pts[i][0] + "," + pts[i][1]);
+        tapRatio(pts[i][0], pts[i][1]);
+        nap(1500, 2000);
+        // 点完出现倒计时或弹窗节点 → 成功推进
+        if (tryFind(descMatches(/.*秒后可领取奖励.*/), 0)) return true;
+        if (tryFind(desc("领取奖励"), 0)) return true;
+    }
+    return false;
+}
+
+/** 盲点弹窗上的「坚持退出」 */
+function blindTapExit() {
+    var pts = [
+        [0.500, 0.600],   // 实测约 (610,1594)
+        [0.500, 0.612],
+        [0.500, 0.588]
+    ];
+    for (var i = 0; i < pts.length; i++) {
+        D("    [盲点] 坚持退出 " + pts[i][0] + "," + pts[i][1]);
+        tapRatio(pts[i][0], pts[i][1]);
+        nap(1500, 2000);
+        if (!onAdActivity()) return true;
+        if (!tryFind(descContains("领取成功"), 0)) return true;
+    }
+    return false;
 }
 
 /** 弹窗开头的「再看N个视频」文案，用于日志/节奏参考 */
@@ -656,8 +742,33 @@ function ensureDrawerReady() {
 
         // 如果在广告页，先退出来
         if (onAdActivity()) {
-            D("  [归位] 仍停在广告页，返回");
-            back(); nap(900, 1300);
+            D("  [归位] 仍停在广告页，按返回退出（第 " + (attempt + 1) + " 次）");
+
+            // ★ 实测：广告页里 back() 经常退不出去（连按 5 次仍停在原页）。
+            //   如果屏幕上有"读不到节点"的奖励弹窗，先盲点「坚持退出」最有效。
+            //   但盲点有风险（直播落地页会被误触），所以只在【已经失败过一次】后才用。
+            var bp = findBlindPopup(attempt >= 1);
+            if (bp) {
+                D("  [归位] 疑似自绘奖励弹窗，盲点「坚持退出」");
+                if (blindTapExit()) {
+                    D("  [归位] 盲点退出成功");
+                    nap(800, 1200);
+                    continue;
+                }
+            }
+
+            // 再试正常返回；多按几次
+            for (var b = 0; b < 3 && onAdActivity(); b++) {
+                try { back(); } catch (e) { }
+                nap(900, 1300);
+            }
+            if (onAdActivity()) {
+                // back 完全无效时，退一步用 HOME 键拉回桌面再重新进 App
+                D("  [归位] back 无效，回桌面重开 App");
+                try { home(); } catch (e) { }
+                nap(1200, 1600);
+                launchAppSafe();
+            }
             continue;
         }
 
@@ -695,10 +806,40 @@ function runAdPhase() {
     var stuck = 0;
     var popTries = 0;        // 同一弹窗连续点击次数
     var lastPopKey = "";
+    var blindCount = 0;      // 读不到节点的弹窗，盲点次数
+    var closeTries = 0;      // 同一关闭按钮连续点击次数（判断"卡住"的证据）
 
     while (now() - t0 < CFG.MAX_MINUTES * 60 * 1000) {
         // ---------- 1. 奖励弹窗 ----------
         var pop = findRewardPopup();
+
+        // ★ 无障碍读不到弹窗时（自绘层），用比例盲点兜底。
+        //   必须带上"卡住证据"：closeTries 表示同一关闭按钮已经点了多次没反应。
+        if (!pop) {
+            var blind = findBlindPopup(closeTries >= 2);
+            if (blind) {
+                blindCount++;
+                log("  ★ 检测到「读不到节点」的奖励弹窗，盲点「领取奖励」（第 " + blindCount + " 次）");
+                if (blindTapClaim()) {
+                    log("    → 盲点成功，广告已开始");
+                    blindCount = 0;
+                    continue;
+                }
+                // 盲点几次还不行 → 试「坚持退出」脱身
+                if (blindCount >= 3) {
+                    log("  ⚠ 盲点领取无效，盲点「坚持退出」脱身");
+                    blindTapExit();
+                    blindCount = 0;
+                    var stillAd = onAdActivity();
+                    if (!stillAd) return "OK";
+                    // 还在广告页就先退出广告链，让上层重新归位
+                    return "NOAD";
+                }
+                continue;
+            }
+            blindCount = 0;
+        }
+
         if (pop) {
             var hint = popupHint();
             // ★ 用「天数 + 明细」做弹窗身份。
@@ -775,7 +916,7 @@ function runAdPhase() {
         if (closers.length > 0) {
             // 同一支广告反复关不掉也要能脱身
             var closeKey = closers[0].s.substring(0, 20) + "@" + closers[0].b.left + "," + closers[0].b.top;
-            if (closeKey === lastSig) stuck++; else { stuck = 0; lastSig = closeKey; }
+            if (closeKey === lastSig) { stuck++; closeTries = stuck; } else { stuck = 0; lastSig = closeKey; closeTries = 0; }
             if (stuck >= 5) {
                 log("  ⚠ 关闭按钮点了 " + stuck + " 次无效，改用返回键");
                 try { back(); } catch (e) { }

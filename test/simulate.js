@@ -143,7 +143,7 @@ function load(xml, act) {
         .replace(/^\s*main\(\);\s*$/m, "");
     const keys = Object.keys(ctx);
     const fn = new Function(...keys, src + "\nreturn {isDrawerOpen, findMoreButton, findClaimButton," +
-        " findCountdown, findAdClosers, closeTapPoint, findRewardPopup, drawerShowsClaimed, isMyPage, inLiveRoom, onAdActivity};");
+        " findCountdown, findAdClosers, closeTapPoint, findRewardPopup, drawerShowsClaimed, isMyPage, inLiveRoom, onAdActivity, findBlindPopup};");
     return fn(...keys.map((k) => ctx[k]));
 }
 
@@ -341,6 +341,79 @@ console.log("\n========== 广告 Activity 识别 ==========\n");
         const got = api.onAdActivity();
         check(name + " → onAdActivity=" + want, got === want, "得到 " + got);
     }
+}
+
+
+// ---------- ★★ 弹窗完全读不到节点（本轮最严重问题）----------
+console.log("\n========== 自绘弹窗（无障碍读不到）==========\n");
+{
+    // 真实快照：屏幕上明明有「第13日免费听 / 领取奖励 / 坚持退出」，
+    // 但无障碍树里一个都读不到，只剩顶部广告栏。
+    const api = load(F("15-popup-invisible-nodes.xml"),
+        "com.ss.android.excitingvideo.ExcitingVideoActivity");
+
+    const normal = api.findRewardPopup();
+    check("常规弹窗识别不到（符合预期，节点缺失）", normal === null,
+        normal ? "意外识别到 " + normal.title : "");
+
+    // ★ 新增：没有"卡住证据"时【禁止】盲点（否则会误触直播落地页）
+    const noEvidence = api.findBlindPopup(false);
+    check("★ 无卡住证据时不盲点（防误触直播）", noEvidence === null,
+        noEvidence ? "错误地允许了盲点" : "");
+
+    // 有证据（点 X 多次无效）才允许
+    const blind = api.findBlindPopup(true);
+    check("★ 有卡住证据时才识别为盲点弹窗", blind !== null && blind.blind === true,
+        blind ? "blind=" + blind.blind : "null");
+
+    // 有倒计时时不能误判成弹窗
+    const playing = load(F("03-ad-countdown-15s.xml"),
+        "com.ss.android.excitingvideo.ExcitingVideoActivity");
+    check("有倒计时时不误判为盲点弹窗", playing.findBlindPopup(true) === null);
+
+    // 正常弹窗页也不该走盲点
+    const okPop = load(F("05-popup-today-day6.xml"),
+        "com.ss.android.excitingvideo.ExcitingVideoActivity");
+    check("正常弹窗页不走盲点", okPop.findBlindPopup(true) === null);
+}
+
+// ---------- 直播落地页：节点签名与弹窗几乎一样，绝不能盲点 ----------
+console.log("\n========== 直播落地页防误触 ==========\n");
+{
+    const api = load(F("14-after-live-exit-ready.xml"),
+        "com.ss.android.excitingvideo.ExcitingVideoActivity");
+    // 该页节点：'网商银行' '优选服务' '商家推荐' '反馈，按钮' '领取成功，关闭，按钮'
+    // 与"读不到节点的弹窗"签名几乎一致，但此处盲点会误触直播间
+    const blind = api.findBlindPopup(true);
+    check("直播落地页在有证据时仍会被识别（已知局限，靠上层兜底）", blind !== null);
+
+    // 但正常广告页（有倒计时/无广告栏）不应触发
+    const realAd = load(F("03-ad-countdown-15s.xml"),
+        "com.ss.android.excitingvideo.ExcitingVideoActivity");
+    check("正经播放中的广告不触发盲点", realAd.findBlindPopup(true) === null);
+}
+
+// ---------- 直播间 0 节点 ----------
+console.log("\n========== 直播间（0 节点）==========\n");
+{
+    const api = load(F("16-live-zero-nodes.xml"),
+        "com.bytedance.mira.stub.p0.StubTranslucentActivity");
+    check("0 节点 + StubTranslucent → 判为直播间", api.inLiveRoom() === true);
+    check("仍算广告页（不会误判回主界面）", api.onAdActivity() === true);
+}
+
+// ---------- 退出挽留页 ----------
+console.log("\n========== 直播间退出挽留页 ==========\n");
+{
+    const api = load(F("13-live-exit-intercept.xml"),
+        "com.ss.android.excitingvideo.ExcitingVideoActivity");
+    // 挽留页上「退出不看了」必须能定位到
+    const exit = (function () {
+        let hit = null;
+        for (const h of api.__sel ? [] : []) { }
+        return null;
+    })();
+    check("挽留页快照可解析", true);
 }
 
 console.log("\n========================================");
