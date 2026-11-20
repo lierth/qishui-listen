@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+
+# Hamibot 本地缓存
+node_modules/
+*.log
+
+# 测试临时产物
+test/*.tmp
+test/out/
